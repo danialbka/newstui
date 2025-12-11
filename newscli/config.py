@@ -17,6 +17,7 @@ DEFAULT_SOURCES: List[Source] = [
     Source("Reuters World", "https://feeds.reuters.com/Reuters/worldNews"),
     Source("AP News", "https://rsshub.app/apnews/topics/apf-topnews"),
     Source("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"),
+    Source("Channel NewsAsia", "https://www.channelnewsasia.com/rssfeeds/8395986"),
     Source("Hacker News", "https://news.ycombinator.com/rss"),
 ]
 

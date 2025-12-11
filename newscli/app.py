@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
@@ -82,27 +82,33 @@ class ArticleReader(ModalScreen):
         Binding("b", "browser", "Browser"),
         Binding("j", "scroll_down", show=False),
         Binding("k", "scroll_up", show=False),
+        Binding("down", "scroll_down", show=False),
+        Binding("up", "scroll_up", show=False),
     ]
 
     def __init__(self, article: Article) -> None:
         super().__init__()
         self.article = article
-        self.body = Static("Loading...", id="reader_body")
+        self.body: Static | None = None
+        self.scroll: VerticalScroll | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
-        yield self.body
+        with VerticalScroll(id="reader_scroll"):
+            yield Static("Loading...", id="reader_body")
         yield Footer()
 
     async def on_mount(self) -> None:
-        self.body.styles.overflow = "auto"
-        self.body.styles.height = "1fr"
+        self.scroll = self.query_one("#reader_scroll", VerticalScroll)
+        self.body = self.query_one("#reader_body", Static)
+        self.scroll.styles.height = "1fr"
+        self.scroll.styles.padding = (1, 2)
         try:
             content = await fetch_article_text(self.article.link)
             title = content.title or self.article.title
             byline = content.byline or (self.article.author or "unknown")
             text = content.text or self.article.summary
-            self.body.update(
+            self.body.update(  # type: ignore[union-attr]
                 "\n".join(
                     [
                         f"[b]{title}[/b]",
@@ -115,7 +121,7 @@ class ArticleReader(ModalScreen):
                 )
             )
         except Exception as e:
-            self.body.update(
+            self.body.update(  # type: ignore[union-attr]
                 "\n".join(
                     [
                         f"[b]{self.article.title}[/b]",
@@ -136,10 +142,12 @@ class ArticleReader(ModalScreen):
             webbrowser.open(self.article.link)
 
     def action_scroll_down(self) -> None:
-        self.body.scroll_down()
+        if self.scroll:
+            self.scroll.scroll_down()
 
     def action_scroll_up(self) -> None:
-        self.body.scroll_up()
+        if self.scroll:
+            self.scroll.scroll_up()
 
 
 class ArticleDetail(Static):
@@ -200,11 +208,28 @@ class ArticleDetail(Static):
 
 class NewsApp(App):
     CSS = """
-    Screen { layout: vertical; }
+    Screen {
+        layout: vertical;
+        background: #000000;
+        color: #e8ffe8;
+    }
+
+    Header, Footer {
+        background: #050505;
+        color: #e8ffe8;
+    }
+
     #body { height: 1fr; }
-    #sources { width: 30%; border: tall $primary; }
-    #articles { width: 40%; border: tall $primary; }
-    #detail { width: 1fr; border: tall $primary; padding: 1 2; overflow: auto; }
+    #sources { width: 30%; border: tall #9fe870; }
+    #articles { width: 40%; border: tall #9fe870; }
+    #detail { width: 1fr; border: tall #9fe870; padding: 1 2; overflow: auto; }
+
+    ListView:focus > ListItem.--highlight {
+        background: #0f2410;
+        color: #e8ffe8;
+    }
+
+    ListItem { color: #e8ffe8; }
     """
 
     BINDINGS = [
