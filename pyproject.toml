@@ -1,0 +1,25 @@
+ [project]
+ name = "newscli"
+ version = "0.1.0"
+ description = "Terminal TUI news reader with author display and content-based bias heuristics."
+ readme = "README.md"
+ requires-python = ">=3.10"
+ authors = [{ name = "newscli contributors" }]
+ dependencies = [
+   "textual>=0.63.0",
+   "httpx>=0.27.0",
+   "feedparser>=6.0.11",
+   "vaderSentiment>=3.3.2",
+   "beautifulsoup4>=4.12.3",
+ ]
+ 
+ [project.scripts]
+ news = "newscli.__main__:main"
+ 
+ [build-system]
+ requires = ["setuptools>=68", "wheel"]
+ build-backend = "setuptools.build_meta"
+ 
+ [tool.setuptools.packages.find]
+ where = ["."]
+ include = ["newscli*"]
