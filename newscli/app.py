@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import webbrowser
 from typing import List, Optional
+
+import httpx
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -205,6 +209,102 @@ class ArticleDetail(Static):
 
         return "\n".join(lines)
 
+class StatusBar(Horizontal):
+    """Bottom bar showing Singapore weather and local time."""
+
+    weather_text: str = reactive("Weather: …")
+    time_text: str = reactive("Time: …")
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="sb_left")
+        yield Static("", id="sb_spacer")
+        yield Static("", id="sb_right")
+
+    def on_mount(self) -> None:
+        self.query_one("#sb_spacer", Static).styles.width = "1fr"
+        # Seed initial content so the bar isn't blank on first paint.
+        self.query_one("#sb_left", Static).update(self.weather_text)
+        self.query_one("#sb_right", Static).update(self.time_text)
+        self.set_interval(1.0, self._update_time)
+        self.set_interval(600.0, self._schedule_weather, pause=False)
+        self._update_time()
+        self.call_after_refresh(self._schedule_weather)
+
+    def watch_weather_text(self, value: str) -> None:
+        self.query_one("#sb_left", Static).update(value)
+
+    def watch_time_text(self, value: str) -> None:
+        self.query_one("#sb_right", Static).update(value)
+
+    def _update_time(self) -> None:
+        try:
+            tz = ZoneInfo("Asia/Singapore")
+        except ZoneInfoNotFoundError:
+            tz = dt.timezone(dt.timedelta(hours=8))
+        now = dt.datetime.now(tz)
+        self.time_text = f"{now:%a %d %b %H:%M:%S} SGT"
+
+    def _schedule_weather(self) -> None:
+        asyncio.create_task(self._refresh_weather())
+
+    async def _refresh_weather(self) -> None:
+        # Open-Meteo current weather for Singapore (no API key).
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            "?latitude=1.3521&longitude=103.8198"
+            "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m"
+            "&timezone=Asia%2FSingapore"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+            current = data.get("current") or {}
+            temp = current.get("temperature_2m")
+            hum = current.get("relative_humidity_2m")
+            code = current.get("weather_code")
+            wind = current.get("wind_speed_10m")
+            desc = _WEATHER_CODES.get(int(code), "Unknown") if code is not None else "Unknown"
+            parts = []
+            if temp is not None:
+                parts.append(f"{temp:.0f}°C")
+            if hum is not None:
+                parts.append(f"{hum:.0f}% RH")
+            if wind is not None:
+                parts.append(f"{wind:.0f} km/h")
+            detail = " · ".join(parts)
+            self.weather_text = f"SG Weather: {desc}" + (f" ({detail})" if detail else "")
+        except Exception:
+            # Keep last known value on failure.
+            if self.weather_text == "Weather: …":
+                self.weather_text = "SG Weather: unavailable"
+
+
+_WEATHER_CODES = {
+    0: "Clear",
+    1: "Mostly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog",
+    48: "Rime fog",
+    51: "Light drizzle",
+    53: "Drizzle",
+    55: "Heavy drizzle",
+    61: "Light rain",
+    63: "Rain",
+    65: "Heavy rain",
+    71: "Light snow",
+    73: "Snow",
+    75: "Heavy snow",
+    80: "Rain showers",
+    81: "Heavy showers",
+    82: "Violent showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm + hail",
+    99: "Severe thunderstorm + hail",
+}
+
 
 class NewsApp(App):
     CSS = """
@@ -214,7 +314,7 @@ class NewsApp(App):
         color: #e8ffe8;
     }
 
-    Header, Footer {
+    Header, Footer, StatusBar, #status_bar {
         background: #050505;
         color: #e8ffe8;
     }
@@ -223,6 +323,14 @@ class NewsApp(App):
     #sources { width: 30%; border: tall #9fe870; }
     #articles { width: 40%; border: tall #9fe870; }
     #detail { width: 1fr; border: tall #9fe870; padding: 1 2; overflow: auto; }
+
+    StatusBar, #status_bar {
+        height: 2;
+        padding: 0 1;
+        border-top: heavy #9fe870;
+        dock: bottom;
+        width: 100%;
+    }
 
     ListView:focus > ListItem.--highlight {
         background: #0f2410;
@@ -260,7 +368,7 @@ class NewsApp(App):
             yield SourcesList(self.sources, id="sources")
             yield ArticlesList(id="articles")
             yield ArticleDetail(id="detail")
-        yield Footer()
+        yield StatusBar(id="status_bar")
 
     async def on_mount(self) -> None:
         if self.sources:
