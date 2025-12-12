@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 import asyncio
 import datetime as dt
+import os
 import webbrowser
 from typing import List, Optional
 
 import httpx
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from urllib.parse import urlparse
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -20,6 +23,67 @@ from .article import fetch_article_text
 from .analysis import analyze_tone
 from .config import Source, load_sources
 from .rss import Article, fetch_feed, parse_feed
+
+
+def _kitty_images_enabled() -> bool:
+    """Gate kitty image rendering behind an env var (on by default for kitty terminals)."""
+    val = os.getenv("NEWSCLI_KITTY_IMAGES", "").strip().lower()
+    if val in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _is_kitty_terminal() -> bool:
+    term = os.getenv("TERM", "").lower()
+    return (
+        "xterm-kitty" in term
+        or os.getenv("KITTY_WINDOW_ID") is not None
+        or os.getenv("KITTY_PID") is not None
+    )
+
+
+async def _fetch_image_bytes(url: str) -> bytes:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        return resp.content
+
+
+def _image_cell_size(screen_width: int) -> tuple[int, int]:
+    cols = max(20, min(screen_width - 4, 60))
+    rows = max(4, min(20, int(cols * 0.6)))
+    return cols, rows
+
+
+def _kitty_image_escape(data: bytes, cols: int, rows: int) -> str:
+    """Return Kitty graphics protocol escape sequence for image bytes."""
+    b64 = base64.b64encode(data).decode("ascii")
+    chunk_size = 4096
+    chunks = [b64[i : i + chunk_size] for i in range(0, len(b64), chunk_size)]
+    parts: list[str] = []
+    for i, chunk in enumerate(chunks):
+        more = 1 if i < len(chunks) - 1 else 0
+        if i == 0:
+            params = f"a=T,t=d,c={cols},r={rows},m={more}"
+        else:
+            params = f"m={more}"
+        parts.append(f"\x1b_G{params};{chunk}\x1b\\")
+    return "".join(parts)
+
+
+class KittyImageRenderable:
+    """Rich renderable that emits Kitty image escapes."""
+
+    def __init__(self, esc: str, rows: int) -> None:
+        self.esc = esc
+        self.rows = rows
+
+    def __rich_console__(self, console, options):
+        from rich.segment import Segment
+        yield Segment(self.esc)
+        # Reserve rows so following text doesn't overlap.
+        yield Segment("\n" * self.rows)
 
 
 class SourceSelected(Message):
@@ -100,7 +164,8 @@ class ArticleReader(ModalScreen):
         yield Header(show_clock=False)
         with VerticalScroll(id="reader_scroll"):
             yield Static("Loading...", id="reader_body")
-        yield Footer()
+        # Keep the SG time / weather visible while reading.
+        yield StatusBar(id="reader_status_bar")
 
     async def on_mount(self) -> None:
         self.scroll = self.query_one("#reader_scroll", VerticalScroll)
@@ -112,26 +177,75 @@ class ArticleReader(ModalScreen):
             title = content.title or self.article.title
             byline = content.byline or (self.article.author or "unknown")
             text = content.text or self.article.summary
-            self.body.update(  # type: ignore[union-attr]
-                "\n".join(
-                    [
-                        f"[b]{title}[/b]",
-                        f"Author: {byline}",
-                        f"Source: {self.article.source}",
-                        f"Link: {self.article.link}",
-                        "",
-                        text,
-                    ]
-                )
-            )
+            if (not text or len(text.strip()) < 200) and self.article.source == "Hacker News":
+                host = urlparse(self.article.link).netloc
+                hn_note = "Content looks thin for this HN link; open in browser."
+                text = (self.article.summary or "").strip()
+                if not text:
+                    text = hn_note
+                else:
+                    text = f"{text}\n\n{hn_note}\nHost: {host}"
+            renderables: list[object] = [
+                f"[b]{title}[/b]",
+                f"Author: {byline}",
+                f"Source: {self.article.source}",
+                f"Link: {self.article.link}",
+                "",
+            ]
+
+            if content.images:
+                if _kitty_images_enabled() and _is_kitty_terminal():
+                    # Fetch and render up to 2 images inline via Kitty protocol.
+                    images = []
+                    for img_url in content.images[:2]:
+                        try:
+                            data = await _fetch_image_bytes(img_url)
+                        except Exception:
+                            continue
+                        cols, rows = _image_cell_size(self.app.size.width if hasattr(self.app, "size") else 80)
+                        esc = _kitty_image_escape(data, cols=cols, rows=rows)
+                        images.append(KittyImageRenderable(esc, rows=rows))
+                    if images:
+                        renderables.append("[b]Images[/b]")
+                        renderables.extend(images)
+                        renderables.append("")
+                    else:
+                        # Fallback to URLs if we couldn't render.
+                        renderables.append("[b]Images[/b]")
+                        for idx, img_url in enumerate(content.images[:3], start=1):
+                            renderables.append(f"{idx}. {img_url}")
+                        renderables.append("")
+                else:
+                    renderables.append("[b]Images[/b]")
+                    for idx, img_url in enumerate(content.images[:3], start=1):
+                        renderables.append(f"{idx}. {img_url}")
+                    renderables.append("")
+
+            from rich.rule import Rule
+            renderables.append(Rule(style="#9fe870"))
+            renderables.append("")
+            renderables.append(text)
+
+            from rich.console import Group
+            self.body.update(Group(*renderables))  # type: ignore[union-attr]
         except Exception as e:
+            fallback = (self.article.summary or "").strip()
+            parsed = urlparse(self.article.link or "")
+            host = parsed.netloc
+            if self.article.source == "Hacker News" and not fallback:
+                fallback = "This HN link can't be parsed here. Press 'b' to open in browser."
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (403, 429):
+                if host.endswith("mothership.sg") or host.endswith("theindependent.sg"):
+                    if not fallback:
+                        fallback = "This site blocks in-app fetching. Press 'b' to open in browser."
+                    e = "Blocked by site (403). Showing RSS summary instead."
             self.body.update(  # type: ignore[union-attr]
                 "\n".join(
                     [
                         f"[b]{self.article.title}[/b]",
                         f"Failed to fetch full article: {e}",
                         "",
-                        self.article.summary or "",
+                        fallback,
                         "",
                         "Press 'b' to open in browser.",
                     ]
@@ -314,10 +428,12 @@ class NewsApp(App):
         color: #e8ffe8;
     }
 
-    Header, Footer, StatusBar, #status_bar {
+    Header, Footer {
         background: #050505;
         color: #e8ffe8;
     }
+
+    /* Article reader uses an internal rule for separation. */
 
     #body { height: 1fr; }
     #sources { width: 30%; border: tall #9fe870; }
@@ -325,11 +441,18 @@ class NewsApp(App):
     #detail { width: 1fr; border: tall #9fe870; padding: 1 2; overflow: auto; }
 
     StatusBar, #status_bar {
-        height: 2;
+        height: 1;
         padding: 0 1;
-        border-top: heavy #9fe870;
         dock: bottom;
         width: 100%;
+        background: #f7c8e0;  /* pastel pink */
+        color: #201018;
+    }
+
+    #sb_left, #sb_right {
+        background: #f7c8e0;
+        color: #201018;
+        text-style: bold;
     }
 
     ListView:focus > ListItem.--highlight {

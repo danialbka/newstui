@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
 from bs4 import BeautifulSoup, Comment
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 
 DEFAULT_HEADERS = {
@@ -36,6 +36,7 @@ class ArticleContent:
     title: str
     byline: Optional[str]
     text: str
+    images: list[str] = field(default_factory=list)
 
 
 async def fetch_html(url: str) -> str:
@@ -157,7 +158,121 @@ def _best_container(soup: BeautifulSoup):
     return best if best_score >= 3 else (soup.body or soup)
 
 
-def extract_readable_text(html: str) -> ArticleContent:
+_IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|gif|webp|bmp|tiff)(\?|#|$)", re.I)
+_SKIP_IMAGE_RE = re.compile(
+    r"(telegram-button|wa-button|whatsapp-button|facebook-button|twitter-button|share-button)",
+    re.I,
+)
+
+
+def _dedupe(urls: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+    return out
+
+
+def _normalize_image_url(raw_url: str, base_url: str | None) -> Optional[str]:
+    url = (raw_url or "").strip()
+    if not url or url.startswith("data:") or re.search(r"\s", url):
+        return None
+    if url.startswith("//"):
+        url = "https:" + url
+    if _SKIP_IMAGE_RE.search(url):
+        return None
+    if re.search(r"\.(svg|ico)(\?|#|$)", url, re.I):
+        return None
+    if base_url:
+        url = urljoin(base_url, url)
+    return url
+
+
+def _pick_img_source(img) -> Optional[str]:
+    src = (
+        img.get("src")
+        or img.get("data-src")
+        or img.get("data-original")
+        or img.get("data-lazy-src")
+    )
+    if not src:
+        srcset = img.get("srcset") or img.get("data-srcset")
+        if srcset:
+            candidates = [
+                part.strip().split(" ")[0]
+                for part in srcset.split(",")
+                if part.strip()
+            ]
+            if candidates:
+                src = candidates[-1]
+    return src
+
+
+def _is_small_image(img) -> bool:
+    try:
+        width = int(img.get("width") or 0)
+        height = int(img.get("height") or 0)
+    except Exception:
+        return False
+    if width and height and (width < 120 or height < 120):
+        return True
+    return False
+
+
+def _extract_images_from_plain_text(text: str) -> list[str]:
+    urls: list[str] = []
+    for match in re.findall(r"https?://[^\s)]+", text):
+        norm = _normalize_image_url(match, None)
+        if norm and _IMAGE_EXT_RE.search(norm):
+            urls.append(norm)
+    return _dedupe(urls)[:5]
+
+
+def _extract_images_from_html(
+    soup: BeautifulSoup, container: BeautifulSoup, base_url: str | None
+) -> list[str]:
+    urls: list[str] = []
+
+    def add(raw: str) -> None:
+        norm = _normalize_image_url(raw, base_url)
+        if norm and norm not in urls:
+            urls.append(norm)
+
+    # OG / Twitter images are usually the cover.
+    for meta in soup.find_all("meta", property=re.compile(r"^og:image", re.I)):
+        prop = (meta.get("property") or "").lower()
+        if prop not in {"og:image", "og:image:url", "og:image:secure_url"}:
+            continue
+        content = meta.get("content")
+        if content:
+            add(content)
+    for meta in soup.find_all("meta", attrs={"name": re.compile(r"^twitter:image", re.I)}):
+        name = (meta.get("name") or "").lower()
+        if name not in {"twitter:image", "twitter:image:src"}:
+            continue
+        content = meta.get("content")
+        if content:
+            add(content)
+    link_src = soup.find("link", rel=re.compile(r"image_src", re.I))
+    if link_src and link_src.get("href"):
+        add(link_src["href"])
+
+    # Inline images inside main container.
+    for img in container.find_all("img"):
+        if _is_small_image(img):
+            continue
+        src = _pick_img_source(img)
+        if not src:
+            continue
+        add(src)
+
+    return urls[:5]
+
+
+def extract_readable_text(html: str, base_url: str | None = None) -> ArticleContent:
     # Some mirrors / sites may return odd control bytes; sanitize before parsing.
     sanitized = re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]", "", html)
     # If it doesn't look like HTML, treat as plain text.
@@ -180,8 +295,10 @@ def extract_readable_text(html: str) -> ArticleContent:
             if re.match(r"^\s*(url source|published time|markdown content)\s*:", ln, re.I):
                 continue
             filtered.append(ln)
-        text = _clean_text("\n".join(filtered))
-        return ArticleContent(title=title, byline=byline, text=text)
+        filtered_text = "\n".join(filtered)
+        text = _clean_text(filtered_text)
+        images = _extract_images_from_plain_text(filtered_text)
+        return ArticleContent(title=title, byline=byline, text=text, images=images)
 
     soup = BeautifulSoup(sanitized, "html.parser")
 
@@ -203,6 +320,7 @@ def extract_readable_text(html: str) -> ArticleContent:
         title = soup.title.string.strip()
 
     container = _best_container(soup)
+    images = _extract_images_from_html(soup, container, base_url)
 
     # Byline heuristics: search near top of container.
     byline = None
@@ -240,9 +358,9 @@ def extract_readable_text(html: str) -> ArticleContent:
             if len(desc) > len(text):
                 text = desc
 
-    return ArticleContent(title=title or "(untitled)", byline=byline, text=text)
+    return ArticleContent(title=title or "(untitled)", byline=byline, text=text, images=images)
 
 
 async def fetch_article_text(url: str) -> ArticleContent:
     html = await fetch_html(url)
-    return extract_readable_text(html)
+    return extract_readable_text(html, base_url=url)

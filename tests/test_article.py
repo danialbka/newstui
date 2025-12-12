@@ -18,6 +18,7 @@ class TestReadableText(unittest.TestCase):
             "URL Source: http://example.com/article\n\n"
             "Published Time: Fri, 12 Dec 2025 07:32:20 GMT\n\n"
             "Markdown Content:\n"
+            "![Alt](https://example.com/image.png)\n"
             "First paragraph.\n\n"
             "Second paragraph.\n"
         )
@@ -28,21 +29,27 @@ class TestReadableText(unittest.TestCase):
         self.assertNotIn("URL Source:", content.text)
         self.assertNotIn("Published Time:", content.text)
         self.assertNotIn("Markdown Content:", content.text)
+        self.assertIn("https://example.com/image.png", content.images)
 
     def test_basic_html_extraction(self) -> None:
         html = (
-            "<html><head><title>Fallback</title></head>"
+            "<html><head>"
+            "<title>Fallback</title>"
+            "<meta property=\"og:image\" content=\"https://example.com/cover.jpg\"/>"
+            "</head>"
             "<body><article><h1>Real Title</h1>"
+            "<img src=\"/img/inline.png\" width=\"600\" height=\"400\"/>"
             "<p>This is a long enough paragraph to be included in extraction.</p>"
             "<p>Another sufficiently long paragraph for testing purposes.</p>"
             "</article></body></html>"
         )
-        content = extract_readable_text(html)
+        content = extract_readable_text(html, base_url="https://example.com/article")
         self.assertEqual(content.title, "Real Title")
         self.assertIn("long enough paragraph", content.text)
         self.assertIn("Another sufficiently long paragraph", content.text)
+        self.assertIn("https://example.com/cover.jpg", content.images)
+        self.assertIn("https://example.com/img/inline.png", content.images)
 
 
 if __name__ == "__main__":
     unittest.main()
-
