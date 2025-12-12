@@ -11,6 +11,14 @@ import httpx
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from urllib.parse import urlparse
 
+from rich import box
+from rich.console import Group
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
+from rich.text import Text
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -185,13 +193,23 @@ class ArticleReader(ModalScreen):
                     text = hn_note
                 else:
                     text = f"{text}\n\n{hn_note}\nHost: {host}"
-            renderables: list[object] = [
-                f"[b]{title}[/b]",
-                f"Author: {byline}",
-                f"Source: {self.article.source}",
-                f"Link: {self.article.link}",
-                "",
-            ]
+            meta = Table.grid(padding=(0, 1))
+            meta.add_column(style="bold #9fe870", justify="right", no_wrap=True)
+            meta.add_column()
+            meta.add_row("Author", byline)
+            meta.add_row("Source", self.article.source)
+            meta.add_row("Link", self.article.link or "")
+
+            header_panel = Panel(
+                meta,
+                title=title,
+                title_align="left",
+                border_style="#9fe870",
+                box=box.ROUNDED,
+                padding=(1, 1),
+            )
+
+            renderables: list[object] = [header_panel]
 
             if content.images:
                 if _kitty_images_enabled() and _is_kitty_terminal():
@@ -206,27 +224,47 @@ class ArticleReader(ModalScreen):
                         esc = _kitty_image_escape(data, cols=cols, rows=rows)
                         images.append(KittyImageRenderable(esc, rows=rows))
                     if images:
-                        renderables.append("[b]Images[/b]")
-                        renderables.extend(images)
-                        renderables.append("")
+                        renderables.append(
+                            Panel(
+                                Group(*images),
+                                title="Images",
+                                border_style="#9fe870",
+                                box=box.SQUARE,
+                                padding=(0, 1),
+                            )
+                        )
                     else:
                         # Fallback to URLs if we couldn't render.
-                        renderables.append("[b]Images[/b]")
+                        urls = Text()
                         for idx, img_url in enumerate(content.images[:3], start=1):
-                            renderables.append(f"{idx}. {img_url}")
-                        renderables.append("")
+                            urls.append(f"{idx}. ", style="bold")
+                            urls.append(img_url + "\n", style="underline")
+                        renderables.append(
+                            Panel(
+                                urls,
+                                title="Images",
+                                border_style="#9fe870",
+                                box=box.SQUARE,
+                                padding=(0, 1),
+                            )
+                        )
                 else:
-                    renderables.append("[b]Images[/b]")
+                    urls = Text()
                     for idx, img_url in enumerate(content.images[:3], start=1):
-                        renderables.append(f"{idx}. {img_url}")
-                    renderables.append("")
+                        urls.append(f"{idx}. ", style="bold")
+                        urls.append(img_url + "\n", style="underline")
+                    renderables.append(
+                        Panel(
+                            urls,
+                            title="Images",
+                            border_style="#9fe870",
+                            box=box.SQUARE,
+                            padding=(0, 1),
+                        )
+                    )
 
-            from rich.rule import Rule
             renderables.append(Rule(style="#9fe870"))
-            renderables.append("")
-            renderables.append(text)
-
-            from rich.console import Group
+            renderables.append(Markdown(text))
             self.body.update(Group(*renderables))  # type: ignore[union-attr]
         except Exception as e:
             fallback = (self.article.summary or "").strip()
@@ -239,18 +277,14 @@ class ArticleReader(ModalScreen):
                     if not fallback:
                         fallback = "This site blocks in-app fetching. Press 'b' to open in browser."
                     e = "Blocked by site (403). Showing RSS summary instead."
-            self.body.update(  # type: ignore[union-attr]
-                "\n".join(
-                    [
-                        f"[b]{self.article.title}[/b]",
-                        f"Failed to fetch full article: {e}",
-                        "",
-                        fallback,
-                        "",
-                        "Press 'b' to open in browser.",
-                    ]
-                )
-            )
+            err = Text()
+            err.append(f"Failed to fetch full article: {e}\n\n", style="bold red")
+            if fallback:
+                err.append(fallback)
+            err.append("\n\nPress 'b' to open in browser.", style="dim")
+            self.body.update(
+                Panel(err, title=self.article.title, border_style="red", box=box.ROUNDED)
+            )  # type: ignore[union-attr]
 
     def action_close(self) -> None:
         self.app.pop_screen()
@@ -281,47 +315,56 @@ class ArticleDetail(Static):
         self.show_author_links = not self.show_author_links
         self.refresh()
 
-    def render(self) -> str:
+    def render(self):
         if not self.article:
-            return "Select an article."
+            return Text("Select an article.", style="dim")
 
         art = self.article
         published = art.published.isoformat() if art.published else "unknown"
         author = art.author or "unknown"
         tone = analyze_tone(f"{art.title}\n{art.summary}")
 
-        lines = [
-            f"[b]{art.title}[/b]",
-            f"Source: {art.source}",
-            f"Author: {author}",
-            f"Published: {published}",
-            f"Link: {art.link}",
-            "",
-        ]
+        meta = Table.grid(padding=(0, 1))
+        meta.add_column(style="bold #9fe870", justify="right", no_wrap=True)
+        meta.add_column()
+        meta.add_row("Source", art.source)
+        meta.add_row("Author", author)
+        meta.add_row("Published", published)
+        meta.add_row("Link", art.link)
+
+        body: list[object] = [meta]
 
         if tone:
-            lines += [
-                "[b]Tone (content-based)[/b]",
-                f"Sentiment: {tone.sentiment:+.2f} (pos {tone.pos:.2f} / neu {tone.neu:.2f} / neg {tone.neg:.2f})",
-                tone.subjectivity_hint,
-                "",
-            ]
+            tone_table = Table.grid(padding=(0, 1))
+            tone_table.add_column(style="bold")
+            tone_table.add_column()
+            tone_table.add_row(
+                "Sentiment",
+                f"{tone.sentiment:+.2f} (pos {tone.pos:.2f} / neu {tone.neu:.2f} / neg {tone.neg:.2f})",
+            )
+            tone_table.add_row("Hint", tone.subjectivity_hint)
+            body.extend([Rule(style="#9fe870"), Text("Tone (content-based)", style="bold"), tone_table])
 
         if art.summary:
-            lines += ["[b]Summary[/b]", art.summary.strip(), ""]
+            body.extend([Rule(style="#9fe870"), Text("Summary", style="bold"), Markdown(art.summary.strip())])
 
         if self.show_author_links and art.author:
             q = art.author.replace(" ", "+")
-            lines += [
-                "[b]Author research links (you open manually)[/b]",
-                f"DuckDuckGo: https://duckduckgo.com/?q={q}+journalist",
-                f"Google: https://www.google.com/search?q={q}+journalist",
-                f"Wikipedia: https://en.wikipedia.org/wiki/Special:Search?search={q}",
-                "",
-                "Note: This app does not scrape personal profiles.",
-            ]
+            links = Text()
+            links.append(f"DuckDuckGo: https://duckduckgo.com/?q={q}+journalist\n")
+            links.append(f"Google: https://www.google.com/search?q={q}+journalist\n")
+            links.append(f"Wikipedia: https://en.wikipedia.org/wiki/Special:Search?search={q}\n\n")
+            links.append("Note: This app does not scrape personal profiles.", style="dim")
+            body.extend([Rule(style="#9fe870"), Text("Author research links", style="bold"), links])
 
-        return "\n".join(lines)
+        return Panel(
+            Group(*body),
+            title=art.title,
+            title_align="left",
+            border_style="#9fe870",
+            box=box.ROUNDED,
+            padding=(1, 1),
+        )
 
 class StatusBar(Horizontal):
     """Bottom bar showing Singapore weather and local time."""
@@ -438,7 +481,7 @@ class NewsApp(App):
     #body { height: 1fr; }
     #sources { width: 30%; border: tall #9fe870; }
     #articles { width: 40%; border: tall #9fe870; }
-    #detail { width: 1fr; border: tall #9fe870; padding: 1 2; overflow: auto; }
+    #detail { width: 1fr; padding: 0 1; overflow: auto; }
 
     StatusBar, #status_bar {
         height: 1;
