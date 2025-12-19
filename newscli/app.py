@@ -27,7 +27,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, ListItem, ListView, Static
 
-from .article import fetch_article_text
+from .article import ArticleContent, extract_readable_text, fetch_article_text
 from .analysis import analyze_tone
 from .config import Source, load_sources
 from .rss import Article, fetch_feed, parse_feed
@@ -168,6 +168,96 @@ class ArticleReader(ModalScreen):
         self.body: Static | None = None
         self.scroll: VerticalScroll | None = None
 
+    async def _render_article(self, content: ArticleContent) -> None:
+        if not self.body:
+            return
+        title = content.title
+        if not title or title == "(untitled)":
+            title = self.article.title
+        byline = content.byline or (self.article.author or "unknown")
+        text = content.text or self.article.summary
+        if (not text or len(text.strip()) < 200) and self.article.source == "Hacker News":
+            host = urlparse(self.article.link).netloc
+            hn_note = "Content looks thin for this HN link; open in browser."
+            text = (self.article.summary or "").strip()
+            if not text:
+                text = hn_note
+            else:
+                text = f"{text}\n\n{hn_note}\nHost: {host}"
+        meta = Table.grid(padding=(0, 1))
+        meta.add_column(style="bold #9fe870", justify="right", no_wrap=True)
+        meta.add_column()
+        meta.add_row("Author", byline)
+        meta.add_row("Source", self.article.source)
+        meta.add_row("Link", self.article.link or "")
+
+        header_panel = Panel(
+            meta,
+            title=title,
+            title_align="left",
+            border_style="#9fe870",
+            box=box.ROUNDED,
+            padding=(1, 1),
+        )
+
+        renderables: list[object] = [header_panel]
+
+        if content.images:
+            if _kitty_images_enabled() and _is_kitty_terminal():
+                # Fetch and render up to 2 images inline via Kitty protocol.
+                images = []
+                for img_url in content.images[:2]:
+                    try:
+                        data = await _fetch_image_bytes(img_url)
+                    except Exception:
+                        continue
+                    cols, rows = _image_cell_size(self.app.size.width if hasattr(self.app, "size") else 80)
+                    esc = _kitty_image_escape(data, cols=cols, rows=rows)
+                    images.append(KittyImageRenderable(esc, rows=rows))
+                if images:
+                    renderables.append(
+                        Panel(
+                            Group(*images),
+                            title="Images",
+                            border_style="#9fe870",
+                            box=box.SQUARE,
+                            padding=(0, 1),
+                        )
+                    )
+                else:
+                    # Fallback to URLs if we couldn't render.
+                    urls = Text()
+                    for idx, img_url in enumerate(content.images[:3], start=1):
+                        urls.append(f"{idx}. ", style="bold")
+                        urls.append(img_url + "\n", style="underline")
+                    renderables.append(
+                        Panel(
+                            urls,
+                            title="Images",
+                            border_style="#9fe870",
+                            box=box.SQUARE,
+                            padding=(0, 1),
+                        )
+                    )
+            else:
+                urls = Text()
+                for idx, img_url in enumerate(content.images[:3], start=1):
+                    urls.append(f"{idx}. ", style="bold")
+                    urls.append(img_url + "\n", style="underline")
+                renderables.append(
+                    Panel(
+                        urls,
+                        title="Images",
+                        border_style="#9fe870",
+                        box=box.SQUARE,
+                        padding=(0, 1),
+                    )
+                )
+
+        renderables.append(Rule(style="#9fe870"))
+        renderables.append(Markdown(text))
+        self.body.update(Group(*renderables))  # type: ignore[union-attr]
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         with VerticalScroll(id="reader_scroll"):
@@ -182,91 +272,13 @@ class ArticleReader(ModalScreen):
         self.scroll.styles.padding = (1, 2)
         try:
             content = await fetch_article_text(self.article.link)
-            title = content.title or self.article.title
-            byline = content.byline or (self.article.author or "unknown")
-            text = content.text or self.article.summary
-            if (not text or len(text.strip()) < 200) and self.article.source == "Hacker News":
-                host = urlparse(self.article.link).netloc
-                hn_note = "Content looks thin for this HN link; open in browser."
-                text = (self.article.summary or "").strip()
-                if not text:
-                    text = hn_note
-                else:
-                    text = f"{text}\n\n{hn_note}\nHost: {host}"
-            meta = Table.grid(padding=(0, 1))
-            meta.add_column(style="bold #9fe870", justify="right", no_wrap=True)
-            meta.add_column()
-            meta.add_row("Author", byline)
-            meta.add_row("Source", self.article.source)
-            meta.add_row("Link", self.article.link or "")
-
-            header_panel = Panel(
-                meta,
-                title=title,
-                title_align="left",
-                border_style="#9fe870",
-                box=box.ROUNDED,
-                padding=(1, 1),
-            )
-
-            renderables: list[object] = [header_panel]
-
-            if content.images:
-                if _kitty_images_enabled() and _is_kitty_terminal():
-                    # Fetch and render up to 2 images inline via Kitty protocol.
-                    images = []
-                    for img_url in content.images[:2]:
-                        try:
-                            data = await _fetch_image_bytes(img_url)
-                        except Exception:
-                            continue
-                        cols, rows = _image_cell_size(self.app.size.width if hasattr(self.app, "size") else 80)
-                        esc = _kitty_image_escape(data, cols=cols, rows=rows)
-                        images.append(KittyImageRenderable(esc, rows=rows))
-                    if images:
-                        renderables.append(
-                            Panel(
-                                Group(*images),
-                                title="Images",
-                                border_style="#9fe870",
-                                box=box.SQUARE,
-                                padding=(0, 1),
-                            )
-                        )
-                    else:
-                        # Fallback to URLs if we couldn't render.
-                        urls = Text()
-                        for idx, img_url in enumerate(content.images[:3], start=1):
-                            urls.append(f"{idx}. ", style="bold")
-                            urls.append(img_url + "\n", style="underline")
-                        renderables.append(
-                            Panel(
-                                urls,
-                                title="Images",
-                                border_style="#9fe870",
-                                box=box.SQUARE,
-                                padding=(0, 1),
-                            )
-                        )
-                else:
-                    urls = Text()
-                    for idx, img_url in enumerate(content.images[:3], start=1):
-                        urls.append(f"{idx}. ", style="bold")
-                        urls.append(img_url + "\n", style="underline")
-                    renderables.append(
-                        Panel(
-                            urls,
-                            title="Images",
-                            border_style="#9fe870",
-                            box=box.SQUARE,
-                            padding=(0, 1),
-                        )
-                    )
-
-            renderables.append(Rule(style="#9fe870"))
-            renderables.append(Markdown(text))
-            self.body.update(Group(*renderables))  # type: ignore[union-attr]
+            await self._render_article(content)
         except Exception as e:
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (403, 429):
+                if self.article.content_html:
+                    content = extract_readable_text(self.article.content_html, base_url=self.article.link)
+                    await self._render_article(content)
+                    return
             fallback = (self.article.summary or "").strip()
             parsed = urlparse(self.article.link or "")
             host = parsed.netloc

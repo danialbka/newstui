@@ -15,9 +15,11 @@ class Source:
 DEFAULT_SOURCES: List[Source] = [
     Source("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
     Source("Reuters World", "https://feeds.reuters.com/Reuters/worldNews"),
-    Source("AP News", "https://rsshub.app/apnews/topics/apf-topnews"),
     Source("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"),
     Source("Channel NewsAsia", "https://www.channelnewsasia.com/rssfeeds/8395986"),
+    Source("Straits Times (Singapore)", "https://www.straitstimes.com/news/singapore/rss.xml"),
+    Source("Mothership (Singapore)", "https://mothership.sg/feed/"),
+    Source("The Independent Singapore", "https://theindependent.sg/feed/"),
     Source("Hacker News", "https://news.ycombinator.com/rss"),
 ]
 

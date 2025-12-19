@@ -25,6 +25,24 @@ DEFAULT_HEADERS = {
     "Connection": "keep-alive",
 }
 
+
+def _mirror_url(url: str) -> str:
+    parsed = urlparse(url)
+    scheme = parsed.scheme or "https"
+    stripped = url.removeprefix("https://").removeprefix("http://")
+    return f"https://r.jina.ai/{scheme}://" + stripped
+
+
+def _mirror_headers() -> dict[str, str]:
+    # Use minimal headers for the mirror to avoid leaking origin referers.
+    return {
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        "Accept": "text/plain,*/*;q=0.8",
+        "Accept-Language": DEFAULT_HEADERS["Accept-Language"],
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+    }
+
 def mirror_on_block_enabled() -> bool:
     """Enable global mirror fallback on 403/429 via env var."""
     val = os.getenv("NEWSCLI_MIRROR_ON_403", "").strip().lower()
@@ -81,14 +99,12 @@ async def fetch_html(url: str) -> str:
                 except httpx.HTTPStatusError as e2:
                     # Mothership blocks bot fetches; use an explicit mirror fallback.
                     if parsed.netloc.endswith("mothership.sg") and e2.response.status_code in (403, 429):
-                        mirror_url = "https://r.jina.ai/http://" + url.removeprefix("https://").removeprefix("http://")
-                        mirror_resp = await client.get(mirror_url, headers=headers)
+                        mirror_resp = await client.get(_mirror_url(url), headers=_mirror_headers())
                         mirror_resp.raise_for_status()
                         return mirror_resp.text
                     # Optional global mirror fallback for other sites.
                     if mirror_on_block_enabled() and e2.response.status_code in (403, 429):
-                        mirror_url = "https://r.jina.ai/http://" + url.removeprefix("https://").removeprefix("http://")
-                        mirror_resp = await client.get(mirror_url, headers=headers)
+                        mirror_resp = await client.get(_mirror_url(url), headers=_mirror_headers())
                         mirror_resp.raise_for_status()
                         return mirror_resp.text
                     raise
