@@ -4,8 +4,8 @@
  
  It does **not** scrape personal background information (e.g., LinkedIn). If you want to research an author, the app only generates search links you can open yourself.
  
- ## Install
- 
+## Install
+
 ```bash
 pip install .
 ```
@@ -14,6 +14,43 @@ Editable installs may work too if your pip/setuptools support it:
 
 ```bash
 pip install -e .
+```
+
+## Fresh setup (from scratch)
+
+```bash
+git clone https://github.com/danialbka/newstui.git
+cd newstui
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e .
+news
+```
+
+## OS notes
+
+Ubuntu/Debian:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip
+```
+
+macOS (Homebrew):
+
+```bash
+brew install python
+```
+
+Windows (PowerShell):
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+py -3 -m pip install -U pip
+py -3 -m pip install -e .
+news
 ```
  
  ## Run
